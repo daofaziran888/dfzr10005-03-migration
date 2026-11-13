@@ -17,7 +17,10 @@
 ├── backend/                  FastAPI（Python） 后端
 │   ├── app/routers/          每个业务模块一组接口
 │   ├── app/services/         业务规则与状态流转
-│   └── app/store.py          内存数据仓库与示例数据
+│   ├── app/persistence/      生命周期台账的本地 SQLite 持久化与迁移
+│   ├── app/store.py          其余模块的内存数据仓库与示例数据
+│   ├── data/legacy/          旧环境导出的生命周期快照（迁移输入）
+│   └── tests/                生命周期持久化回归测试
 ├── .gitignore
 └── docker-compose.yml
 ```
@@ -65,6 +68,51 @@ npm run dev
 | 数据回收站 | `recycle` | 回收记录 | 记录编号、表名称、删除时间 |
 | 变更审计追踪 | `audit` | 变更记录 | 记录编号、变更对象、变更类型 |
 | 查询性能分析 | `benchmark` | 性能报告 | 报告编号、查询语句、执行耗时 |
+
+## 生命周期台账的持久化
+
+表生命周期管理、数据回收站、变更审计追踪三个模块的状态不再只放在进程内存里，
+统一落到本地 SQLite 文件（默认 `backend/data/lifecycle.sqlite3`），服务重启后
+策略状态、待处理标记、最后动作以及回收记录/审计流水都能恢复。
+
+存储与迁移口径：
+
+- 三张表按业务编号唯一：`life_lifecycle_policy.policy_no`（策略编号）、
+  `life_recycle_record.record_no`、`life_change_audit.record_no`。
+  策略编号即表名口径（例如 `LIFE-0001`），迁移时原样保留。
+- 迁移在单个 `BEGIN IMMEDIATE` 事务内完成；重复执行按唯一键跳过，不产生副本。
+- 旧记录缺失的可选字段（保留天数、归档路径、清理方式、最后操作）按空值补齐，
+  补齐项记入 `backfilled_fields`；已有值一律不覆盖。
+- 运行期动作与存量回填并发时，动作更新带 `revision` 乐观锁、回填用唯一键去重，
+  以首次成功落库的结论为准，后到的一方拿到的是已落库结果而非覆盖写入。
+- 迁移前用 SQLite 在线备份生成快照；事务失败会回滚并在错误里给出
+  `recoverable_location`（快照路径或原库路径），`/api/health` 同时暴露该状态。
+- 成功迁移后追加两条可解释的数据：一条 `RECY-MIG-0001` 回收记录保存当前状态快照，
+  每条策略一条 `AUDI-MIG-<策略编号>` 审计记录保存迁移前后差异。
+- 启动顺序固定为“先历史快照、再本地开发样例”，由 `LIFECYCLE_LEGACY_SEED` 指定历史文件。
+
+相关环境变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `LIFECYCLE_DB_PATH` | `backend/data/lifecycle.sqlite3` | 台账库文件 |
+| `LIFECYCLE_BACKUP_DIR` | `backend/data/backups` | 迁移/切换前快照目录 |
+| `LIFECYCLE_LEGACY_SEED` | `backend/data/legacy/lifecycle-history.json` | 旧环境历史快照 |
+| `LIFECYCLE_AUTO_MIGRATE` | `1` | 启动时是否自动回填，设为 `0` 可关闭 |
+
+运维命令（在仓库根目录执行）：
+
+```bash
+make migrate     # 按部署顺序回填历史记录与本地开发样例（幂等）
+make verify      # 核对 LIFE-0001..0003、RECY-0001、AUDI-0001 与唯一性
+make snapshot    # 切换前生成数据库快照
+make test        # 生命周期持久化回归测试
+make preflight   # 切换前演练：依赖锁定、镜像构建、部署演练、样例与历史核对
+```
+
+`make preflight` 会先检查依赖锁文件、尝试构建镜像（没有容器运行时时如实记为
+`skipped` 而不是假成功）、在临时库里连续迁移两次、核对三类记录，再用两个进程
+验证动作结论跨重启保留。演练只写临时目录，不会触碰正式台账。
 
 ## 约定
 

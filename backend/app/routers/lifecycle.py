@@ -5,6 +5,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.persistence import database
+from app.persistence.state import MIGRATION_STATE
 from app.schemas import ActionResult, EntryPayload, PageResult
 from app.services.lifecycle import LifecycleService
 
@@ -30,6 +32,38 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出表生命周期管理清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "lifecycle", "total": total, "items": items}
+
+
+@router.get("/storage")
+def storage_status() -> dict[str, Any]:
+    """生命周期台账的持久化状态：迁移结论、台账计数与可恢复位置。"""
+    payload: dict[str, Any] = {
+        "engine": "sqlite",
+        "db_path": database.db_path,
+        "backup_dir": database.backup_dir,
+        "migration": MIGRATION_STATE.get("status"),
+        "recoverable_location": MIGRATION_STATE.get("recoverable_location"),
+        "migration_run": {
+            "run_id": MIGRATION_STATE.get("run_id"),
+            "inserted": MIGRATION_STATE.get("inserted"),
+            "skipped": MIGRATION_STATE.get("skipped"),
+            "audit_diffs": MIGRATION_STATE.get("audit_diffs"),
+            "recycle_snapshot": MIGRATION_STATE.get("recycle_snapshot"),
+            "backup_path": MIGRATION_STATE.get("backup_path"),
+        },
+    }
+    try:
+        payload["counts"] = database.counts()
+    except Exception as exc:  # noqa: BLE001 - 状态读取失败要显式暴露
+        payload["error"] = str(exc)
+    return payload
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条生命周期策略明细；不存在时给出可读的错误说明。"""
@@ -42,9 +76,11 @@ def get_entry(entry_id: int) -> dict:
 @router.post("", response_model=ActionResult)
 def create_entry(payload: EntryPayload) -> ActionResult:
     """登记一条生命周期策略，缺字段时说明原因而不是静默丢弃。"""
-    entry, missing = service.create_entry(payload.values)
+    entry, missing, conflict = service.create_entry(payload.values)
     if missing:
         return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
+    if conflict:
+        return ActionResult(ok=False, message=conflict, entry=entry)
     return ActionResult(ok=True, message="生命周期策略已登记", entry=entry)
 
 
@@ -56,10 +92,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出表生命周期管理清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "lifecycle", "total": total, "items": items}

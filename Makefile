@@ -9,3 +9,23 @@ backend:
 
 frontend:
 	cd frontend && npm run dev
+
+# ---- 生命周期台账：迁移、演练与核对 ----
+
+PY := backend/.venv/bin/python
+export PYTHONPATH := backend
+
+preflight:
+	./scripts/preflight.sh
+
+migrate:
+	$(PY) -m app.persistence_cli migrate --with-dev-seed
+
+verify:
+	$(PY) -m app.persistence_cli verify
+
+snapshot:
+	$(PY) -m app.persistence_cli snapshot --label pre-cutover
+
+test:
+	$(PY) -m unittest discover -s backend/tests -v

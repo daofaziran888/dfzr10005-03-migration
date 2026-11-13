@@ -5,9 +5,26 @@ services:
       - "8000:8000"
     environment:
       - APP_ENV=local
+      - LIFECYCLE_DB_PATH=/srv/app/data/lifecycle.sqlite3
+      - LIFECYCLE_BACKUP_DIR=/srv/app/data/backups
+      - LIFECYCLE_LEGACY_SEED=/srv/app/data/legacy/lifecycle-history.json
+      - LIFECYCLE_AUTO_MIGRATE=1
+    volumes:
+      # 生命周期台账与迁移备份放在命名卷上，重启/重建容器都能恢复。
+      - lifecycle-data:/srv/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
   frontend:
     build: ./frontend
     ports:
       - "5173:5173"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+
+volumes:
+  lifecycle-data:

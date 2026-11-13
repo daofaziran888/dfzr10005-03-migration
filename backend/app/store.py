@@ -27,9 +27,20 @@ class Store:
                 return row
         return None
 
-    def overview(self) -> dict[str, object]:
+    def overview(self, overrides: dict[str, dict[str, int]] | None = None) -> dict[str, object]:
+        """汇总各模块指标；``overrides`` 用来把已持久化的模块计数接进看板。"""
+        overrides = overrides or {}
         modules: list[dict[str, object]] = []
         for name in self.module_names():
+            if name in overrides:
+                counts = overrides[name]
+                modules.append({
+                    "name": name,
+                    "created": int(counts.get("created", 0)),
+                    "pending": int(counts.get("pending", 0)),
+                    "abnormal": int(counts.get("abnormal", 0)),
+                })
+                continue
             rows = self.rows(name)
             modules.append({
                 "name": name,
